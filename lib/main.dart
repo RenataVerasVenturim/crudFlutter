@@ -25,27 +25,55 @@ import 'package:flutter/material.dart'; // Biblioteca que cria a interface gráf
 import 'package:sqflite/sqflite.dart'; // Biblioteca para trabalhar com o banco de dados SQLite.
 import 'package:path/path.dart'; // Biblioteca para manipular caminhos de arquivos (usada para localizar o banco de dados).
 
-void main() {
-  runApp(const MyApp()); // Inicia o aplicativo.
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  //await resetDB(); // só para recriar do zero
+  runApp(const MyApp());
 }
+
+final themeNotifier = ValueNotifier(ThemeMode.system);
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      theme: ThemeData(
-  primarySwatch: Colors.lightBlue,
-  appBarTheme: AppBarTheme(
-    backgroundColor: Color(0xFF1D324E), //fundo
-    foregroundColor: Colors.white, // título e ícones
-    ),
-    textTheme: const TextTheme(
-      bodyLarge: TextStyle(color: Colors.black, fontSize: 20),
-    ),
-  ),
-      home: const HomeScreen(), // Define a tela inicial como 'HomeScreen'.
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: themeNotifier,
+      builder: (_, mode, __) {
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: 'Tarefas do Dia',
+          theme: ThemeData.light(),
+          darkTheme: ThemeData.dark(),
+          themeMode: mode, // 👈 controla se é claro ou escuro
+          home: const HomeScreen(),
+        );
+      },
+    );
+  }
+}
+
+
+
+// CLASSE 'TEMA'
+class ThemeConfig {
+  final int id;
+  final bool isDarkMode;
+
+  ThemeConfig({required this.id, required this.isDarkMode});
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'isDarkMode': isDarkMode ? 1 : 0,
+    };
+  }
+
+  factory ThemeConfig.fromMap(Map<String, dynamic> map) {
+    return ThemeConfig(
+      id: map['id'],
+      isDarkMode: map['isDarkMode'] == 1,
     );
   }
 }
@@ -83,17 +111,21 @@ class DatabaseService {
 Future<Database> initializeDB() async {
   String path = await getDatabasesPath();
   String dbPath = join(path, 'example.db');
+    return openDatabase(
+      dbPath,
+      onCreate: (database, version) async {
+        await database.execute(
+          'CREATE TABLE items( id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, completed INTEGER NOT NULL DEFAULT 0)',
+        );
+        await database.execute(
+          'CREATE TABLE theme_config( id INTEGER PRIMARY KEY, isDarkMode INTEGER NOT NULL DEFAULT 0)',
+        );
+      },
+      version: 1,
+    );
+  }
 
-  return openDatabase(
-    dbPath,
-    onCreate: (database, version) async {
-      await database.execute(
-        'CREATE TABLE items( id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, completed INTEGER NOT NULL DEFAULT 0)',
-      );
-    },
-    version: 1,
-  );
-}
+
 
 
 
@@ -144,12 +176,37 @@ Future<Database> initializeDB() async {
     final db = await initializeDB();
     await db.close(); // Fecha o banco de dados.
   }
+
+  Future<void> saveTheme(ThemeConfig theme) async {
+  final db = await initializeDB();
+  await db.insert(
+    'theme_config',
+    theme.toMap(),
+    conflictAlgorithm: ConflictAlgorithm.replace, // substitui se já existir
+  );
 }
 
+Future<ThemeConfig?> loadTheme() async {
+  final db = await initializeDB();
+  final List<Map<String, dynamic>> maps = await db.query('theme_config', limit: 1);
+  if (maps.isNotEmpty) {
+    return ThemeConfig.fromMap(maps.first);
+  }
+  return null; // padrão
+}
+
+}
+/*
+Future<void> resetDB() async {
+  String path = await getDatabasesPath();
+  String dbPath = join(path, 'example.db');
+  await deleteDatabase(dbPath); // ⚡ Deleta o banco atual
+}*/
 
 // TELA PRINCIPAL DO APP, ONDE O USUÁRIO VERÁ E MANIPULARÁ OS ITENS.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+  
 
   @override
   // ignore: library_private_types_in_public_api
@@ -162,12 +219,14 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _nameController = TextEditingController(); // Controlador do campo de texto.
   int? _editingItemId; // ARMAZENA O ID DO ITEM QUE ESTÁ SENDO EDITADO.
   String _buttonText = 'Adicionar'; // Define o texto do botão.
+  bool isDarkMode = false;
   
 
   @override
   void initState() {
     super.initState();
     _loadItems(); // CARREGANDO OS ITENS DO BANCO DE DADOS QUANDO A TELA É INICIALIZADA.
+    _loadTheme();
   }
 
   // FUNÇÃO QUE CARREGA OS ITENS DO BANCO DE DADOS.
@@ -196,6 +255,25 @@ class _HomeScreenState extends State<HomeScreen> {
       _buttonText = 'Atualizar Item'; // MUDA O TEXTO DO BOTÃO PARA "ATUALIZAR ITEM".
     });
   }
+Future<void> _loadTheme() async {
+  final theme = await dbService.loadTheme();
+  if (theme != null) {
+    setState(() {
+      isDarkMode = theme.isDarkMode;
+    });
+    themeNotifier.value = isDarkMode ? ThemeMode.dark : ThemeMode.light; // 👈 sincroniza
+  }
+}
+
+
+  void _toggleTheme() {
+    setState(() {
+      isDarkMode = !isDarkMode;
+    });
+    themeNotifier.value = isDarkMode ? ThemeMode.dark : ThemeMode.light; // 👈 sincroniza
+    dbService.saveTheme(ThemeConfig(id: 1, isDarkMode: isDarkMode));
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -207,6 +285,15 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.all(16.0), // Define espaçamento ao redor do conteúdo.
         child: Column(
           children: <Widget>[
+            IconButton(
+              icon: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
+              onPressed: () {
+                setState(() {
+                  isDarkMode = !isDarkMode;
+                });
+                themeNotifier.value = isDarkMode ? ThemeMode.dark : ThemeMode.light;
+              },
+            ),
             // CAMPO DE TEXTO ONDE O USUÁRIO DIGITA O NOME DO ITEM.
             TextField(
               controller: _nameController, // Controlador do campo de texto.
